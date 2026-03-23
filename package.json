@@ -1,0 +1,21 @@
+{
+  "name": "football-clip-system",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "predev": "bash scripts/check-media-deps.sh",
+    "dev": "concurrently --kill-others-on-fail -p \"{name}\" --prefix-colors \"bgCyan.bold,bgBlue.bold,bgMagenta.bold\" -n \"web,api,worker\" \"pnpm dev:web\" \"pnpm dev:api\" \"pnpm dev:worker\"",
+    "predev:api": "bash scripts/check-media-deps.sh",
+    "dev:web": "bash scripts/dev-web.sh",
+    "dev:api": "bash scripts/dev-api.sh",
+    "predev:worker": "bash scripts/check-media-deps.sh",
+    "dev:worker": "bash scripts/dev-worker.sh",
+    "build": "pnpm --filter web build",
+    "lint": "pnpm --filter web lint",
+    "test": "bash scripts/dev-api.sh --version > /dev/null && PYTHONPATH=$(pwd) python3 -m pytest apps/api/tests/ -v"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

@@ -1,0 +1,81 @@
+import os
+import subprocess
+from dashscope import MultiModalConversation
+import dashscope
+
+# =============== 配置区 ===============
+dashscope.api_key = "sk-5575354a26994781be44120066d9a9db"
+video_local_path = "D:/qwen-soccor/BUPT_Tongji_2_partn3.mp4"
+# ===================================
+
+if not os.path.exists(video_local_path):
+    raise FileNotFoundError(f"视频文件不存在: {video_local_path}")
+
+video_uri = f"file://{video_local_path}"
+
+# ✅ 保留你效果好的完整提示词，仅在末尾增加多行输出指令
+prompt_text = """
+你正在分析一段业余足球比赛视频（单机位、场边视角、可能含围网遮挡、夜间光线）。请按**两阶段逻辑**检测进球，**优先保证召回率**：
+
+### 🔑 第一阶段：球是否越过门线？（物理事实）
+✅ **核心证据（满足任一即可）**：
+- **直接证据**：球完全越过两门柱之间连线（即使球网松散/球滚出）
+- **间接证据**（当直接证据模糊时）：
+  - 守门员扑救失败后**不捡球**（抱头/静止/走向中圈）
+  - 球消失于门区 + 无球员追球
+  - **门柱反弹**：球击中门柱 → **反弹方向朝向球门内部**（非向外弹出）
+
+❌ **明确排除**：
+- 球击中门柱/横梁**向外弹出**
+- 守门员扑出后**立即捡球**（放在小禁区）
+- 球出底线/边线（球员去捡球）
+
+### ⚖️ 第二阶段：进球是否有效？（比赛规则）
+✅ **仅检查以下硬性规则**：
+- 无裁判吹哨/摇手（注意：业余裁判动作明显）
+- 无明显越位（射门瞬间，进攻方不在最后第二名防守队员之后）
+- 无手球（球未接触手臂后入网）
+
+📌 **关键原则**：
+1. **物理证据优先**：当球过线证据充分时，**不要求庆祝或阵型重置**（尤其比赛末段）
+2. **行为证据降级**：
+   - 庆祝动作非必需（接受缓慢走回中场）
+   - 阵型重置是**强支持证据，但不是必要条件**
+3. **模糊场景处理**：
+   - 当物理证据70%支持进球 → 且无无效规则触发 → **判为进球**
+   - 当物理证据模糊，但出现**门将不捡球 + 至少3名球员走向中圈** → 判为进球
+
+### ✅ 输出要求
+- 多进球：每行输出 `{"goal": true, "moment": X.X}`
+- 无进球：只输出 `{"goal": false}`
+- **禁止任何额外文字、解释、Markdown格式**
+"""
+
+messages = [{
+    'role': 'user',
+    'content': [
+        {'video': video_uri, 'fps': 2},
+        {'text': prompt_text}
+    ]
+}]
+
+print("🔍 正在调用模型（直接输出原始结果）...")
+try:
+    response = MultiModalConversation.call(model='qwen-vl-max', messages=messages)
+
+    if response.status_code != 200:
+        print(f"❌ 调用失败: {response.message}")
+        exit(1)
+
+    # ✅ 直接打印模型原始输出（不解析JSON）
+    raw_output = response.output.choices[0].message.content[0]["text"]
+    print("\n--- 模型原始输出 ---")
+    print(raw_output)
+    print("--------------------")
+
+    # 可选：简单统计行数
+    lines = [line.strip() for line in raw_output.strip().split('\n') if line.strip()]
+    print(f"\n📝 共 {len(lines)} 行输出")
+
+except Exception as e:
+    print(f"\n❌ 异常: {e}")

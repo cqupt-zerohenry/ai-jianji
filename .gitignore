@@ -1,0 +1,9 @@
+node_modules/                                                                 
+data/                                                                         
+dump.rdb                                                                      
+logs/                                                                         
+*.zip                                                                         
+.DS_Store
+sqlite:
+.env
+.claude/
