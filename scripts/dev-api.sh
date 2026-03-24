@@ -8,20 +8,6 @@ PORT="${API_PORT:-8000}"
 HOST="${API_HOST:-0.0.0.0}"
 PID_FILE="$ROOT/.pids/api.pid"
 
-detect_python() {
-  for py in \
-    /Library/Frameworks/Python.framework/Versions/3.*/bin/python3.* \
-    "$HOME/.pyenv/shims/python3" \
-    python3.12 python3.11 python3.10 python3.9 python3
-  do
-    if command -v "$py" >/dev/null 2>&1 && "$py" -c "import fastapi" 2>/dev/null; then
-      echo "$py"
-      return 0
-    fi
-  done
-  return 1
-}
-
 cleanup_api_processes() {
   local existing=""
 
@@ -66,11 +52,7 @@ cleanup_api_processes() {
   fi
 }
 
-PYTHON_BIN="$(detect_python || true)"
-if [ -z "$PYTHON_BIN" ]; then
-  echo "ERROR: No Python with fastapi found. Run: pip3 install -r requirements.txt" >&2
-  exit 1
-fi
+PYTHON_BIN="$(bash "$ROOT/scripts/ensure-python-env.sh" fastapi uvicorn)"
 
 if [ "${1:-}" = "--version" ]; then
   exec "$PYTHON_BIN" -m uvicorn --version

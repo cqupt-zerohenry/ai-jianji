@@ -13,7 +13,7 @@
     "dev:worker": "bash scripts/dev-worker.sh",
     "build": "pnpm --filter web build",
     "lint": "pnpm --filter web lint",
-    "test": "bash scripts/dev-api.sh --version > /dev/null && PYTHONPATH=$(pwd) python3 -m pytest apps/api/tests/ -v"
+    "test": "bash scripts/test-api.sh"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

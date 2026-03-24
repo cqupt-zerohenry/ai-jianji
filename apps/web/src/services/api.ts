@@ -5,7 +5,7 @@
 import axios from 'axios'
 import type {
   JobListItem, JobDetail, JobCreateResponse,
-  RebuildRequest, HealthCheck
+  RebuildRequest, HealthCheck, SourceInfo
 } from '@/types'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
@@ -87,6 +87,30 @@ export async function retryJob(jobId: string): Promise<void> {
 
 export async function deleteJob(jobId: string): Promise<void> {
   await api.delete(`/api/jobs/${jobId}`)
+}
+
+export async function addSource(
+  jobId: string,
+  file: File,
+  onProgress?: (progress: number) => void,
+): Promise<SourceInfo[]> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post<SourceInfo[]>(`/api/jobs/${jobId}/sources`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+    onUploadProgress: evt => {
+      if (!onProgress) return
+      const total = evt.total ?? file.size
+      if (!total) return
+      onProgress(Math.max(0, Math.min(1, evt.loaded / total)))
+    },
+  })
+  return data
+}
+
+export function getSourceUrl(jobId: string, sourceIndex: number): string {
+  return `${BASE_URL}/api/jobs/${jobId}/source?source_index=${sourceIndex}`
 }
 
 export function getDownloadUrl(jobId: string): string {

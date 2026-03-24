@@ -7,7 +7,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../"))
 
 import pytest
-import asyncio
+import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
 # Patch settings for test environment
@@ -17,15 +17,7 @@ os.environ.setdefault("REDIS_URL", "redis://localhost:6379/1")  # test DB
 from apps.api.main import app
 from apps.api.models.database import init_db
 
-
-@pytest.fixture(scope="module")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest.fixture(scope="module")
+@pytest_asyncio.fixture
 async def client():
     await init_db()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:

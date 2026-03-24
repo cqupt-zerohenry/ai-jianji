@@ -70,12 +70,18 @@ export interface JobListItem {
   error_message?: string
 }
 
+export interface SourceInfo {
+  index: number
+  name: string
+}
+
 export interface JobDetail extends JobListItem {
   source_path?: string
   output_path?: string
   ai_plan?: AIPlan
   events: DetectedEvent[]
   timelines: Timeline[]
+  sources: SourceInfo[]
 }
 
 export interface AIPlan {

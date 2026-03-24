@@ -2,6 +2,12 @@ node_modules/
 data/                                                                         
 dump.rdb                                                                      
 logs/                                                                         
+.pids/
+.venv/
+.venv-install.lock/
+.pytest_cache/
+__pycache__/
+*.py[cod]
 *.zip                                                                         
 .DS_Store
 sqlite:

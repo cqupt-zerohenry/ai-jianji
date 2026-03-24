@@ -9,6 +9,7 @@ import shutil
 from typing import Optional
 
 from fastapi import UploadFile
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.config import get_settings
@@ -16,7 +17,10 @@ from apps.api.repositories import job_repo
 from apps.api.models.db_models import Job
 from apps.api.schemas.job_schemas import RebuildRequest, JobDetail
 from apps.api.queue.producer import enqueue_job, cancel_job_queue
-from apps.api.services.source_manifest import write_manifest, get_manifest_path
+from apps.api.services.source_manifest import (
+    write_manifest, get_manifest_path, get_parts_dir,
+    ensure_multi_source, append_source, list_sources,
+)
 
 
 settings = get_settings()
@@ -202,15 +206,23 @@ async def rebuild_job(
 
     for tl_patch in request.timelines:
         tl = await get_timeline(db, tl_patch.timeline_id)
+
         if not tl:
-            continue
+            # New timeline created on the frontend — insert into DB
+            existing_count = len(job.timelines) if job.timelines else 0
+            tl = await job_repo.create_timeline(
+                db,
+                job_id=job_id,
+                name=tl_patch.name or "Manual",
+                order_index=existing_count,
+            )
 
         # Update name if provided
         if tl_patch.name:
             tl.name = tl_patch.name
 
         # Replace clips
-        await delete_clips_for_timeline(db, tl_patch.timeline_id)
+        await delete_clips_for_timeline(db, tl.id)
         clips_data = [
             {
                 "title": c.title,
@@ -226,7 +238,7 @@ async def rebuild_job(
             }
             for idx, c in enumerate(tl_patch.clips)
         ]
-        await bulk_insert_clips(db, tl_patch.timeline_id, clips_data)
+        await bulk_insert_clips(db, tl.id, clips_data)
 
     # Re-queue render task
     await job_repo.update_job_status(
@@ -246,3 +258,60 @@ def get_output_path(job_id: str) -> Optional[str]:
         if os.path.exists(path):
             return path
     return None
+
+
+async def add_source_to_job(
+    db: AsyncSession,
+    job_id: str,
+    file: UploadFile,
+) -> list[dict]:
+    """
+    Append a new source video to an existing job.
+    Upgrades single-source jobs to multi-source format if needed.
+    Returns the full updated source list.
+    """
+    job = await job_repo.get_job(db, job_id)
+    if not job:
+        raise ValueError(f"Job {job_id} not found")
+
+    original_name = file.filename or "video.mp4"
+    ext = os.path.splitext(original_name)[1] or ".mp4"
+
+    # 1) Ensure multi-source structure exists
+    ensure_multi_source(
+        job_id,
+        original_source_path=job.source_path or "",
+        original_filename=job.source_filename or "",
+    )
+
+    # 2) Save new file into parts dir
+    parts_dir = get_parts_dir(job_id)
+    os.makedirs(parts_dir, exist_ok=True)
+
+    # Determine next part index from existing files
+    existing_parts = [f for f in os.listdir(parts_dir) if f.startswith("part_")]
+    next_index = len(existing_parts)
+    part_path = os.path.join(parts_dir, f"part_{next_index:03d}{ext}")
+    await _save_upload_file(file, part_path)
+
+    # 3) Append to manifest
+    manifest = append_source(job_id, part_path, original_name)
+
+    # 4) Update job source_filename to reflect all sources
+    all_names = [s.get("name", "") for s in manifest.get("sources", [])]
+    await db.execute(
+        sa_update(Job)
+        .where(Job.id == job_id)
+        .values(source_filename=", ".join(all_names))
+    )
+    await db.flush()
+
+    return manifest.get("sources", [])
+
+
+async def get_job_sources(db: AsyncSession, job_id: str) -> list[dict]:
+    """Return the source list for a job."""
+    job = await job_repo.get_job(db, job_id)
+    if not job:
+        return []
+    return list_sources(job_id, job.source_path, job.source_filename)

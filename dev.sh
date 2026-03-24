@@ -24,19 +24,7 @@ API_PORT=8000
 WEB_PORT=5173
 REDIS_PORT=6379
 
-# ── Auto-detect correct Python (needs fastapi/rq installed) ──
-detect_python() {
-  for py in python3.9 python3.10 python3.11 python3.12 python3; do
-    if command -v "$py" &>/dev/null; then
-      if "$py" -c "import fastapi" 2>/dev/null; then
-        echo "$py"
-        return
-      fi
-    fi
-  done
-  echo "python3"
-}
-PYTHON=$(detect_python)
+PYTHON=""
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -49,6 +37,15 @@ log()  { echo -e "${BLUE}[dev.sh]${NC} $*"; }
 ok()   { echo -e "${GREEN}[✓]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 fail() { echo -e "${RED}[✗]${NC} $*"; exit 1; }
+
+ensure_project_python() {
+  if [ -n "$PYTHON" ] && [ -x "$PYTHON" ]; then
+    return 0
+  fi
+
+  PYTHON="$(bash "$SCRIPT_DIR/scripts/ensure-python-env.sh" fastapi rq watchfiles)" || \
+    fail "Python environment setup failed"
+}
 
 # ── Env Setup ────────────────────────────────────────────────
 setup_env() {
@@ -75,14 +72,8 @@ check_deps() {
     fi
   done
 
-  # Python packages
-  if python3.9 -c "import fastapi, rq, redis, sqlalchemy" 2>/dev/null || \
-     python3 -c "import fastapi, rq, redis, sqlalchemy" 2>/dev/null; then
-    ok "Python packages OK"
-  else
-    warn "Some Python packages missing — installing..."
-    pip3 install -r "$SCRIPT_DIR/requirements.txt" || fail "pip install failed"
-  fi
+  ensure_project_python
+  ok "Python packages OK ($PYTHON)"
 
   # Node packages
   if [ ! -d "$SCRIPT_DIR/apps/web/node_modules" ]; then
@@ -132,6 +123,7 @@ start_redis() {
 }
 
 start_api() {
+  ensure_project_python
   kill_port $API_PORT
   log "Starting FastAPI on port $API_PORT (Python: $PYTHON)..."
   cd "$SCRIPT_DIR"
@@ -150,6 +142,7 @@ start_api() {
 }
 
 start_worker() {
+  ensure_project_python
   log "Starting Worker..."
   cd "$SCRIPT_DIR"
   PYTHONPATH="$SCRIPT_DIR" \

@@ -214,40 +214,19 @@ export function useTimelineEditor(initialTimelines: Timeline[]) {
       if (clipIndex === -1) return
 
       const [clip] = fromTl.clips.splice(clipIndex, 1)
-      const duration = Math.max(MIN_CLIP_DURATION, clip.end_time - clip.start_time)
       clip.timeline_id = toTimelineId
       const safeIndex = Math.max(0, Math.min(toIndex, toTl.clips.length))
       toTl.clips.splice(safeIndex, 0, clip)
 
       fromTl.clips.forEach((c, i) => { c.order_index = i })
       toTl.clips.forEach((c, i) => { c.order_index = i })
-
-      const sortedTo = sortByOrder(toTl.clips)
-      const movedIdx = sortedTo.findIndex(c => c.id === clip.id)
-      if (movedIdx !== -1) {
-        const prev = movedIdx > 0 ? sortedTo[movedIdx - 1] : null
-        const next = movedIdx < sortedTo.length - 1 ? sortedTo[movedIdx + 1] : null
-
-        const snapPoints = getSnapPoints(toTl.clips, clip.id)
-        let start = clip.start_time
-        if (prev) {
-          start = prev.end_time
-        } else if (next) {
-          start = Math.max(0, next.start_time - duration)
-        } else {
-          start = Math.max(0, start)
-        }
-        start = snapToNearest(start, snapPoints)
-        let end = start + duration
-
-        const constrained = constrainClip(sortedTo, movedIdx, start, end, 'both')
-        clip.start_time = constrained.start
-        clip.end_time = constrained.end
-      }
     }))
   }, [])
 
-  const addClip = useCallback((timelineId: string) => {
+  const addClip = useCallback((
+    timelineId: string,
+    options?: { startTime?: number; endTime?: number; title?: string },
+  ) => {
     const newId = `local_clip_${Date.now()}_${Math.floor(Math.random() * 1000)}`
     setState(produce(draft => {
       const tl = draft.timelines.find(t => t.id === timelineId)
@@ -255,13 +234,15 @@ export function useTimelineEditor(initialTimelines: Timeline[]) {
 
       const sorted = sortByOrder(tl.clips)
       const last = sorted.length ? sorted[sorted.length - 1] : null
-      const start = last ? Math.max(0, last.end_time) : 0
-      const end = start + 5
+
+      const start = options?.startTime ?? (last ? Math.max(0, last.end_time) : 0)
+      const end = options?.endTime ?? (start + 5)
+      const title = options?.title ?? '手动片段'
 
       tl.clips.push({
         id: newId,
         timeline_id: timelineId,
-        title: '手动片段',
+        title,
         event_type: 'HIGHLIGHT',
         start_time: start,
         end_time: end,
@@ -275,6 +256,27 @@ export function useTimelineEditor(initialTimelines: Timeline[]) {
       draft.selectedClipId = newId
     }))
   }, [])
+
+  /** Ensure at least one non-source editable timeline exists. Returns its id. */
+  const ensureManualTimeline = useCallback((): string => {
+    const existing = state.timelines.find(
+      t => !t.name.startsWith('Source:'),
+    )
+    if (existing) return existing.id
+
+    const newId = `local_manual_${Date.now()}`
+    setState(produce(draft => {
+      draft.timelines.push({
+        id: newId,
+        job_id: draft.timelines[0]?.job_id || '',
+        name: 'Manual',
+        order_index: draft.timelines.length,
+        is_active: true,
+        clips: [],
+      })
+    }))
+    return newId
+  }, [state.timelines])
 
   const addTimeline = useCallback(() => {
     const newId = `local_${Date.now()}`
@@ -369,5 +371,6 @@ export function useTimelineEditor(initialTimelines: Timeline[]) {
     reorderClips,
     toRebuildRequest,
     hasPendingRebuild,
+    ensureManualTimeline,
   }
 }

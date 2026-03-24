@@ -103,12 +103,19 @@ class JobListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SourceInfo(BaseModel):
+    index: int
+    name: str
+    path: Optional[str] = None
+
+
 class JobDetail(JobListItem):
     source_path: Optional[str] = None
     output_path: Optional[str] = None
     ai_plan: Optional[dict[str, Any]] = None
     events: list[EventSchema] = []
     timelines: list[TimelineSchema] = []
+    sources: list[SourceInfo] = []
 
 
 class JobCreateResponse(BaseModel):

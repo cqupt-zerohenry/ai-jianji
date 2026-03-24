@@ -48,6 +48,12 @@ export function TimelineTrack({
   const [{ isOver }, drop] = useDrop({
     accept: DND_TYPE,
     canDrop: () => !isSourceTrack,
+    drop(item: { clipId: string; timelineId: string; index: number }, monitor) {
+      // If a child ClipBlock already handled the drop, skip
+      if (monitor.didDrop()) return
+      // Append to end of this timeline
+      onMoveClip(item.timelineId, timeline.id, item.clipId, timeline.clips.length)
+    },
     collect: monitor => ({ isOver: monitor.isOver() }),
   })
 
@@ -112,14 +118,8 @@ export function TimelineTrack({
   }, [allTimelines, isSourceTrack, timeline.clips])
 
   const sortedClips = React.useMemo(() => {
-    if (isAIGeneratedTrack) {
-      return [...timeline.clips].sort((a, b) => {
-        if (a.start_time !== b.start_time) return a.start_time - b.start_time
-        return a.order_index - b.order_index
-      })
-    }
     return [...timeline.clips].sort((a, b) => a.order_index - b.order_index)
-  }, [isAIGeneratedTrack, timeline.clips])
+  }, [timeline.clips])
 
   const clipLayout = React.useMemo(() => {
     const rows = sortedClips.map((clip, index) => ({
