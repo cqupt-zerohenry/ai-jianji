@@ -5,7 +5,7 @@ Never import Redis from this module.
 from __future__ import annotations
 from datetime import datetime
 from typing import Optional, Any
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -45,10 +45,29 @@ async def get_job(db: AsyncSession, job_id: str) -> Optional[Job]:
     return result.scalar_one_or_none()
 
 
-async def list_jobs(db: AsyncSession) -> list[Job]:
-    result = await db.execute(
-        select(Job).order_by(Job.created_at.desc())
-    )
+async def list_jobs(
+    db: AsyncSession,
+    keyword: Optional[str] = None,
+    status: Optional[str] = None,
+) -> list[Job]:
+    stmt = select(Job)
+
+    normalized_keyword = (keyword or "").strip().lower()
+    if normalized_keyword:
+        like_pattern = f"%{normalized_keyword}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(Job.name).like(like_pattern),
+                func.lower(func.coalesce(Job.source_filename, "")).like(like_pattern),
+                func.lower(Job.id).like(like_pattern),
+            )
+        )
+
+    normalized_status = (status or "").strip().lower()
+    if normalized_status:
+        stmt = stmt.where(func.lower(Job.status) == normalized_status)
+
+    result = await db.execute(stmt.order_by(Job.created_at.desc()))
     return list(result.scalars().all())
 
 

@@ -40,6 +40,7 @@ async def create_job_from_upload(
     db: AsyncSession,
     file: UploadFile,
     name: Optional[str] = None,
+    clip_order_mode: Optional[str] = None,
 ) -> Job:
     """Save uploaded file and create job record, then enqueue."""
     job_id = str(uuid.uuid4())
@@ -62,10 +63,22 @@ async def create_job_from_upload(
 
     # Enqueue to Redis
     try:
+        if clip_order_mode:
+            write_manifest(job_id, {
+                "job_id": job_id,
+                "clip_order_mode": clip_order_mode,
+                "status": "uploaded",
+            })
         enqueue_job(job_id=job_id, source_path=dest_path)
     except Exception:
         # Upload is already written to disk; remove it on enqueue failure to avoid
         # orphan files when request transaction is rolled back.
+        manifest_path = get_manifest_path(job_id)
+        if os.path.exists(manifest_path):
+            try:
+                os.remove(manifest_path)
+            except OSError:
+                pass
         if os.path.exists(dest_path):
             try:
                 os.remove(dest_path)
@@ -79,6 +92,7 @@ async def create_job_from_uploads(
     db: AsyncSession,
     files: list[UploadFile],
     name: Optional[str] = None,
+    clip_order_mode: Optional[str] = None,
 ) -> Job:
     """Save multiple uploaded videos and enqueue multi-source AI processing job."""
     if not files:
@@ -111,6 +125,7 @@ async def create_job_from_uploads(
             "sources": source_segments,
             "status": "uploaded",
             "source_count": len(source_segments),
+            "clip_order_mode": clip_order_mode or settings.resolved_clip_plan_order_mode,
         })
 
         # 2) Create DB job and enqueue (AI processes multiple sources directly)

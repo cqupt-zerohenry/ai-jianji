@@ -1,20 +1,131 @@
 """
-Detection pipeline — multimodal fusion when both keys available,
-single-chain fallback otherwise, mock for dev mode.
+Detection pipeline — multimodal fusion when both visual and audio-semantic
+chains are available, single-chain fallback otherwise, and hard-fail when no
+real AI chain is configured.
 """
 from __future__ import annotations
 import asyncio
+import hashlib
+import inspect
+import json
 import logging
-import random
+import os
+import time
 from typing import Optional, Callable
 
 from apps.api.schemas.detection_schemas import (
-    DetectionResult, DetectionEvent, EventType
+    DetectionResult
 )
 from apps.api.config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+_DETECTION_CACHE_VERSION = "v1"
+
+
+async def _emit_progress(progress_callback, value: float) -> None:
+    if not progress_callback:
+        return
+    try:
+        ret = progress_callback(max(0.0, min(1.0, float(value))))
+        if inspect.isawaitable(ret):
+            await ret
+    except Exception:
+        return
+
+
+def _should_use_detection_cache(has_dashscope: bool, has_audio_chain: bool) -> bool:
+    # Cache only meaningful (and deterministic enough) when real inference chains are enabled.
+    return bool(settings.detection_cache_enabled) and (has_dashscope or has_audio_chain)
+
+
+def _build_detection_cache_key(
+    source_path: str,
+    video_duration: float,
+    has_dashscope: bool,
+    has_audio_chain: bool,
+) -> Optional[str]:
+    if not source_path or not os.path.exists(source_path):
+        return None
+
+    try:
+        stat = os.stat(source_path)
+    except OSError:
+        return None
+
+    payload = {
+        "version": _DETECTION_CACHE_VERSION,
+        "source_path": os.path.abspath(source_path),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "video_duration": round(float(video_duration or 0.0), 3),
+        "dashscope_enabled": bool(has_dashscope),
+        "audio_chain_enabled": bool(has_audio_chain),
+        # Inference-related knobs (cache should invalidate when these change).
+        "dashscope_model": settings.dashscope_model,
+        "dashscope_audio_asr_model": settings.dashscope_audio_asr_model,
+        "dashscope_audio_text_model": settings.dashscope_audio_text_model,
+        "dashscope_window_seconds": settings.dashscope_window_seconds,
+        "dashscope_frames_per_window": settings.dashscope_frames_per_window,
+        "dashscope_max_windows": settings.dashscope_max_windows,
+        "dashscope_window_overlap_ratio": settings.dashscope_window_overlap_ratio,
+        "dashscope_request_timeout_seconds": settings.dashscope_request_timeout_seconds,
+        "dashscope_window_concurrency": settings.dashscope_window_concurrency,
+        "dashscope_compatible_base_url": settings.dashscope_compatible_base_url,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _get_detection_cache_path(cache_key: str) -> str:
+    return os.path.join(settings.detection_cache_dir, f"{cache_key}.json")
+
+
+def _load_detection_cache(cache_key: str) -> Optional[DetectionResult]:
+    cache_path = _get_detection_cache_path(cache_key)
+    if not os.path.exists(cache_path):
+        return None
+
+    ttl = max(0, int(settings.detection_cache_ttl_seconds))
+    if ttl > 0:
+        try:
+            age_seconds = time.time() - os.path.getmtime(cache_path)
+            if age_seconds > ttl:
+                os.remove(cache_path)
+                return None
+        except OSError:
+            return None
+
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        result_payload = payload.get("result") if isinstance(payload, dict) else None
+        if not isinstance(result_payload, dict):
+            return None
+        result = DetectionResult.model_validate(result_payload)
+        return result
+    except Exception:
+        return None
+
+
+def _save_detection_cache(cache_key: str, result: DetectionResult) -> None:
+    os.makedirs(settings.detection_cache_dir, exist_ok=True)
+    cache_path = _get_detection_cache_path(cache_key)
+    tmp_path = f"{cache_path}.tmp.{os.getpid()}"
+    payload = {
+        "cached_at": int(time.time()),
+        "result": result.model_dump(mode="json"),
+    }
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp_path, cache_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 async def run_detection_pipeline(
@@ -24,20 +135,45 @@ async def run_detection_pipeline(
 ) -> DetectionResult:
     """
     Detection strategy:
-    - Both DashScope + OpenAI keys: run in parallel, fuse results.
-    - Single key: run that chain alone.
-    - No keys: mock fallback (dev mode).
+    - Visual DashScope + audio-semantic Qwen chain available: run in parallel, fuse.
+    - Single chain available: run that chain alone.
+    - No keys: fail fast (production-safe behavior).
     """
     has_dashscope = bool(settings.dashscope_api_key)
-    has_openai = bool(settings.openai_api_key)
+    has_audio_chain = bool(
+        settings.dashscope_api_key
+        and settings.dashscope_audio_asr_model
+        and settings.dashscope_audio_text_model
+    )
+    cache_key: Optional[str] = None
+    if _should_use_detection_cache(has_dashscope, has_audio_chain):
+        cache_key = _build_detection_cache_key(
+            source_path=source_path,
+            video_duration=video_duration,
+            has_dashscope=has_dashscope,
+            has_audio_chain=has_audio_chain,
+        )
+        if cache_key:
+            cached_result = _load_detection_cache(cache_key)
+            if cached_result:
+                if cached_result.video_duration is None:
+                    cached_result.video_duration = video_duration
+                logger.info("Detection cache hit: %s (%s)", source_path, cached_result.chain_used)
+                await _emit_progress(progress_callback, 1.0)
+                return cached_result
 
     # ── Multimodal fusion mode (both keys configured) ─────────────────
-    if has_dashscope and has_openai:
-        return await _run_fusion_detection(source_path, video_duration, progress_callback)
+    if has_dashscope and has_audio_chain:
+        result = await _run_fusion_detection(source_path, video_duration, progress_callback)
+        if result.video_duration is None:
+            result.video_duration = video_duration
+        if cache_key:
+            _save_detection_cache(cache_key, result)
+        return result
 
     # ── Single-chain mode ─────────────────────────────────────────────
     dashscope_error: Optional[Exception] = None
-    openai_error: Optional[Exception] = None
+    audio_chain_error: Optional[Exception] = None
 
     if has_dashscope:
         try:
@@ -46,40 +182,44 @@ async def run_detection_pipeline(
             result = await detect_with_dashscope(source_path, progress_callback)
             if result.video_duration is None:
                 result.video_duration = video_duration
+            if cache_key:
+                _save_detection_cache(cache_key, result)
             logger.info(f"DashScope detected {len(result.events)} events")
             return result
         except Exception as e:
             dashscope_error = e
             logger.warning(f"DashScope chain failed: {e}")
 
-    if has_openai:
+    if has_audio_chain:
         try:
             from apps.worker.detectors.openai_detector import detect_with_openai
-            logger.info("Running OpenAI detection fallback...")
+            logger.info("Running Qwen audio-semantic detection fallback...")
             result = await detect_with_openai(source_path, progress_callback)
             if result.video_duration is None:
                 result.video_duration = video_duration
-            logger.info(f"OpenAI detected {len(result.events)} events")
+            if cache_key:
+                _save_detection_cache(cache_key, result)
+            logger.info("Qwen audio-semantic chain detected %d events", len(result.events))
             return result
         except Exception as e:
-            openai_error = e
-            logger.warning(f"OpenAI chain failed: {e}")
+            audio_chain_error = e
+            logger.warning("Qwen audio-semantic chain failed: %s", e)
 
-    if has_dashscope or has_openai:
+    if has_dashscope or has_audio_chain:
         parts = []
         if dashscope_error is not None:
             parts.append(f"DashScope failed: {dashscope_error}")
-        if openai_error is not None:
-            parts.append(f"OpenAI failed: {openai_error}")
+        if audio_chain_error is not None:
+            parts.append(f"Qwen audio chain failed: {audio_chain_error}")
         reason = " | ".join(parts) if parts else "No AI chain succeeded."
         raise RuntimeError(
-            "AI detection failed and mock fallback is disabled when API keys are configured. "
+            "AI detection failed when API keys are configured. "
             + reason
         )
 
-    # Mock fallback (dev mode only, no API keys configured)
-    logger.warning("No AI API keys configured — using mock detection for development")
-    return _generate_mock_detection(video_duration)
+    raise RuntimeError(
+        "No AI detection chain available. Configure DASHSCOPE_API_KEY."
+    )
 
 
 async def _run_fusion_detection(
@@ -87,12 +227,12 @@ async def _run_fusion_detection(
     video_duration: float,
     progress_callback: Optional[Callable],
 ) -> DetectionResult:
-    """Run DashScope (visual) + OpenAI (audio) in parallel, fuse results."""
+    """Run DashScope visual chain + Qwen audio-semantic chain in parallel, then fuse."""
     from apps.worker.detectors.dashscope_detector import detect_with_dashscope
     from apps.worker.detectors.openai_detector import detect_with_openai
     from apps.worker.detectors.event_merger import fuse_multimodal_events
 
-    logger.info("Running multimodal fusion detection (DashScope + OpenAI)")
+    logger.info("Running multimodal fusion detection (DashScope visual + Qwen audio)")
 
     results = await asyncio.gather(
         detect_with_dashscope(source_path, progress_callback),
@@ -101,96 +241,47 @@ async def _run_fusion_detection(
     )
 
     dashscope_result = results[0]
-    openai_result = results[1]
+    audio_result = results[1]
 
     dashscope_ok = isinstance(dashscope_result, DetectionResult)
-    openai_ok = isinstance(openai_result, DetectionResult)
+    audio_ok = isinstance(audio_result, DetectionResult)
 
     # Both succeeded → fuse
-    if dashscope_ok and openai_ok:
-        duration = video_duration or dashscope_result.video_duration or openai_result.video_duration or 0.0
+    if dashscope_ok and audio_ok:
+        duration = video_duration or dashscope_result.video_duration or audio_result.video_duration or 0.0
         fused_events = fuse_multimodal_events(
             visual_events=dashscope_result.events,
-            audio_events=openai_result.events,
+            audio_events=audio_result.events,
             duration=duration,
         )
         logger.info(
             "Multimodal fusion: %d visual + %d audio → %d fused events",
             len(dashscope_result.events),
-            len(openai_result.events),
+            len(audio_result.events),
             len(fused_events),
         )
         return DetectionResult(
             events=fused_events,
-            chain_used="dashscope+openai",
+            chain_used="dashscope+qwen-audio",
             video_duration=duration if duration > 0 else None,
             raw_response=dashscope_result.raw_response,
         )
 
     # Graceful degradation: one succeeded
     if dashscope_ok:
-        logger.warning("OpenAI chain failed during fusion (%s), using DashScope only", openai_result)
+        logger.warning("Qwen audio chain failed during fusion (%s), using DashScope only", audio_result)
         if dashscope_result.video_duration is None:
             dashscope_result.video_duration = video_duration
         return dashscope_result
 
-    if openai_ok:
-        logger.warning("DashScope chain failed during fusion (%s), using OpenAI only", dashscope_result)
-        if openai_result.video_duration is None:
-            openai_result.video_duration = video_duration
-        return openai_result
+    if audio_ok:
+        logger.warning("DashScope visual chain failed during fusion (%s), using Qwen audio only", dashscope_result)
+        if audio_result.video_duration is None:
+            audio_result.video_duration = video_duration
+        return audio_result
 
     # Both failed
     raise RuntimeError(
         f"Multimodal fusion: both chains failed. "
-        f"DashScope: {dashscope_result} | OpenAI: {openai_result}"
-    )
-
-
-def _generate_mock_detection(duration: float) -> DetectionResult:
-    """Generate realistic-looking mock events for development/demo."""
-    if duration <= 0:
-        duration = 5400.0  # 90 min default
-
-    event_templates = [
-        (EventType.GOAL, 0.95, "Spectacular goal scored!"),
-        (EventType.CORNER_KICK, 0.82, "Dangerous corner kick delivered"),
-        (EventType.FREE_KICK, 0.81, "Free kick from the edge of the box"),
-        (EventType.SHOT_ON_TARGET, 0.88, "Shot on target, goalkeeper saves"),
-        (EventType.SHOT_BLOCKED, 0.86, "Powerful shot blocked by defender"),
-        (EventType.SAVE, 0.92, "Brilliant save by goalkeeper"),
-        (EventType.OFFSIDE, 0.84, "Attack halted for offside"),
-        (EventType.FOUL, 0.83, "Midfield foul stops the counter attack"),
-        (EventType.YELLOW_CARD, 0.97, "Foul play, yellow card shown"),
-        (EventType.SUBSTITUTION, 0.8, "Substitution: fresh striker comes on"),
-        (EventType.SHOT_ON_TARGET, 0.85, "Long range effort tests keeper"),
-        (EventType.HIGHLIGHT, 0.78, "Exciting build-up play"),
-        (EventType.GOAL, 0.93, "Header goal from corner kick"),
-        (EventType.RED_CARD, 0.99, "Serious foul, red card!"),
-        (EventType.PENALTY, 0.96, "Penalty awarded after VAR review"),
-        (EventType.VAR, 0.90, "VAR check underway"),
-        (EventType.SAVE, 0.88, "Penalty saved!"),
-    ]
-
-    events = []
-    num_events = min(len(event_templates), max(3, int(duration / 500)))
-    step = duration / (num_events + 1)
-
-    for i in range(num_events):
-        template = event_templates[i % len(event_templates)]
-        timestamp = step * (i + 1) + random.uniform(-30, 30)
-        timestamp = max(30.0, min(duration - 30.0, timestamp))
-        events.append(
-            DetectionEvent(
-                event_type=template[0],
-                timestamp_seconds=round(timestamp, 1),
-                confidence=template[1],
-                description=template[2],
-            )
-        )
-
-    return DetectionResult(
-        events=events,
-        chain_used="mock",
-        video_duration=duration,
+        f"DashScope: {dashscope_result} | Qwen audio: {audio_result}"
     )

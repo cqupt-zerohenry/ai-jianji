@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${API_PORT:-8000}"
 HOST="${API_HOST:-0.0.0.0}"
 PID_FILE="$ROOT/.pids/api.pid"
+DEFAULT_VENV_PY="${PYTHON_VENV_DIR:-$ROOT/.venv}/bin/python"
 
 cleanup_api_processes() {
   local existing=""
@@ -52,7 +53,15 @@ cleanup_api_processes() {
   fi
 }
 
-PYTHON_BIN="$(bash "$ROOT/scripts/ensure-python-env.sh" fastapi uvicorn)"
+PYTHON_BIN="$DEFAULT_VENV_PY"
+if ! [ -x "$PYTHON_BIN" ] || ! "$PYTHON_BIN" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
+  PYTHON_BIN="$(bash "$ROOT/scripts/ensure-python-env.sh" fastapi uvicorn)"
+fi
+
+if [ -z "$PYTHON_BIN" ] || ! [ -x "$PYTHON_BIN" ]; then
+  echo "ERROR: Unable to resolve a Python interpreter with FastAPI/Uvicorn installed." >&2
+  exit 1
+fi
 
 if [ "${1:-}" = "--version" ]; then
   exec "$PYTHON_BIN" -m uvicorn --version

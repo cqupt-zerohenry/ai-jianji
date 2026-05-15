@@ -34,7 +34,7 @@ class DetectionEvent(BaseModel):
 class DetectionResult(BaseModel):
     """Complete detection output from any chain."""
     events: list[DetectionEvent]
-    chain_used: str  # "dashscope" | "openai" | "mock"
+    chain_used: str  # "dashscope" | "openai" | "dashscope+openai" | "inference"
     video_duration: Optional[float] = None
     raw_response: Optional[str] = None
 

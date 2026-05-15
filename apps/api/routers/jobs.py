@@ -18,17 +18,33 @@ from apps.api.services.job_service import (
     delete_job_and_files, rebuild_job, get_output_path,
     add_source_to_job, get_job_sources,
 )
+from apps.api.config import get_settings
 from apps.api.queue.redis_client import ping_redis
 from apps.api.queue.producer import QueueUnavailableError
 from apps.api.utils.range_response import range_file_response
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+SUPPORTED_CLIP_ORDER_MODES = {"timeline", "priority"}
+SUPPORTED_JOB_STATUS_FILTERS = {"queued", "processing", "completed", "failed", "canceled"}
+
+
+def _queue_unavailable_message() -> str:
+    return f"Task queue unavailable: Redis is not reachable at {get_settings().redis_url}."
+
+
+def _normalize_clip_order_mode(raw_value: Optional[str]) -> str:
+    mode = (raw_value or "").strip().lower() or get_settings().resolved_clip_plan_order_mode
+    if mode not in SUPPORTED_CLIP_ORDER_MODES:
+        allowed = ", ".join(sorted(SUPPORTED_CLIP_ORDER_MODES))
+        raise HTTPException(400, f"Unsupported clip_order_mode: {raw_value}. Allowed: {allowed}.")
+    return mode
 
 
 @router.post("", response_model=JobCreateResponse, status_code=201)
 async def upload_job(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
+    clip_order_mode: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a video file and create an async processing job."""
@@ -40,11 +56,17 @@ async def upload_job(
     if not ping_redis():
         raise HTTPException(
             status_code=503,
-            detail="Task queue unavailable: Redis is not running on localhost:6379.",
+            detail=_queue_unavailable_message(),
         )
 
     try:
-        job = await create_job_from_upload(db, file, name)
+        resolved_clip_order_mode = _normalize_clip_order_mode(clip_order_mode)
+        job = await create_job_from_upload(
+            db,
+            file,
+            name,
+            clip_order_mode=resolved_clip_order_mode,
+        )
     except QueueUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -60,6 +82,7 @@ async def upload_job(
 async def upload_multi_job(
     files: list[UploadFile] = File(...),
     name: Optional[str] = Form(None),
+    clip_order_mode: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload multiple videos and create one combined processing job."""
@@ -75,11 +98,17 @@ async def upload_multi_job(
     if not ping_redis():
         raise HTTPException(
             status_code=503,
-            detail="Task queue unavailable: Redis is not running on localhost:6379.",
+            detail=_queue_unavailable_message(),
         )
 
     try:
-        job = await create_job_from_uploads(db, files, name)
+        resolved_clip_order_mode = _normalize_clip_order_mode(clip_order_mode)
+        job = await create_job_from_uploads(
+            db,
+            files,
+            name,
+            clip_order_mode=resolved_clip_order_mode,
+        )
     except QueueUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -92,9 +121,22 @@ async def upload_multi_job(
 
 
 @router.get("", response_model=list[JobListItem])
-async def list_jobs(db: AsyncSession = Depends(get_db)):
-    """List all jobs ordered by creation time (newest first)."""
-    jobs = await job_repo.list_jobs(db)
+async def list_jobs(
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """List jobs ordered by creation time (newest first), with optional filters."""
+    normalized_status = (status or "").strip().lower()
+    if normalized_status and normalized_status not in SUPPORTED_JOB_STATUS_FILTERS:
+        allowed = ", ".join(sorted(SUPPORTED_JOB_STATUS_FILTERS))
+        raise HTTPException(400, f"Unsupported status filter: {status}. Allowed: {allowed}.")
+
+    jobs = await job_repo.list_jobs(
+        db,
+        keyword=q,
+        status=normalized_status or None,
+    )
     return jobs
 
 

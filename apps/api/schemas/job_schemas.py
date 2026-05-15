@@ -157,4 +157,5 @@ class HealthCheck(BaseModel):
     api: bool
     redis: bool
     sqlite: bool
+    clip_plan_order_mode: str
     timestamp: datetime

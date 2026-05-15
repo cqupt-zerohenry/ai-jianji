@@ -1,10 +1,10 @@
 /**
  * useJobs — manages job list with polling.
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useDeferredValue } from 'react'
 import axios from 'axios'
-import { listJobs, cancelJob, retryJob, deleteJob, uploadJob, uploadJobs } from '@/services/api'
-import type { JobListItem } from '@/types'
+import { listJobs, cancelJob, retryJob, deleteJob, uploadJob, uploadJobs, checkHealth } from '@/services/api'
+import type { JobListItem, ClipOrderMode, JobFilterStatus } from '@/types'
 import { POLLING_INTERVAL_MS } from '@/utils/constants'
 
 function getErrorMessage(error: unknown, fallback: string): string {
@@ -19,23 +19,48 @@ function getErrorMessage(error: unknown, fallback: string): string {
 
 export function useJobs() {
   const [jobs, setJobs] = useState<JobListItem[]>([])
+  const [hasJobs, setHasJobs] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadFileName, setUploadFileName] = useState<string | null>(null)
+  const [clipOrderMode, setClipOrderMode] = useState<ClipOrderMode>('timeline')
+  const [clipOrderModeTouched, setClipOrderModeTouched] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const deferredSearchQuery = useDeferredValue(searchQuery)
+  const [statusFilter, setStatusFilter] = useState<JobFilterStatus>('all')
+
+  const handleClipOrderModeChange = useCallback((mode: ClipOrderMode) => {
+    setClipOrderModeTouched(true)
+    setClipOrderMode(mode)
+  }, [])
 
   const fetchJobs = useCallback(async () => {
     try {
-      const data = await listJobs()
-      setJobs(data)
+      const hasActiveFilters = !!deferredSearchQuery.trim() || statusFilter !== 'all'
+      if (!hasActiveFilters) {
+        const data = await listJobs()
+        setJobs(data)
+        setHasJobs(data.length > 0)
+      } else {
+        const [filtered, allJobs] = await Promise.all([
+          listJobs({
+            q: deferredSearchQuery,
+            status: statusFilter,
+          }),
+          listJobs(),
+        ])
+        setJobs(filtered)
+        setHasJobs(allJobs.length > 0)
+      }
       setError(null)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to fetch jobs')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [deferredSearchQuery, statusFilter])
 
   // Initial fetch + polling
   useEffect(() => {
@@ -44,8 +69,27 @@ export function useJobs() {
     return () => clearInterval(interval)
   }, [fetchJobs])
 
-  const handleUpload = useCallback(async (files: File[], name?: string) => {
+  // Sync frontend default mode with backend config (unless user already changed it).
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const health = await checkHealth()
+        if (cancelled || clipOrderModeTouched) return
+        const mode = health.clip_plan_order_mode === 'priority' ? 'priority' : 'timeline'
+        setClipOrderMode(mode)
+      } catch {
+        // Keep local fallback mode when health check is unavailable.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [clipOrderModeTouched])
+
+  const handleUpload = useCallback(async (files: File[], name?: string, mode?: ClipOrderMode) => {
     if (!files.length) return
+    const resolvedMode = mode || clipOrderMode
 
     setLoading(true)
     setError(null)
@@ -56,11 +100,11 @@ export function useJobs() {
     )
     try {
       if (files.length === 1) {
-        await uploadJob(files[0], name, p => {
+        await uploadJob(files[0], name, resolvedMode, p => {
           setUploadProgress(p)
         })
       } else {
-        await uploadJobs(files, name, p => {
+        await uploadJobs(files, name, resolvedMode, p => {
           setUploadProgress(p)
         })
       }
@@ -76,7 +120,7 @@ export function useJobs() {
       }, 350)
       setLoading(false)
     }
-  }, [fetchJobs])
+  }, [clipOrderMode, fetchJobs])
 
   const handleCancel = useCallback(async (jobId: string) => {
     await cancelJob(jobId)
@@ -90,12 +134,18 @@ export function useJobs() {
 
   const handleDelete = useCallback(async (jobId: string) => {
     await deleteJob(jobId)
-    setJobs(prev => prev.filter(j => j.id !== jobId))
-  }, [])
+    await fetchJobs()
+  }, [fetchJobs])
 
   return {
-    jobs, loading, error,
+    jobs, hasJobs, loading, error,
     uploading, uploadProgress, uploadFileName,
+    clipOrderMode,
+    setClipOrderMode: handleClipOrderModeChange,
+    searchQuery,
+    setSearchQuery,
+    statusFilter,
+    setStatusFilter,
     refresh: fetchJobs,
     onUpload: handleUpload,
     onCancel: handleCancel,

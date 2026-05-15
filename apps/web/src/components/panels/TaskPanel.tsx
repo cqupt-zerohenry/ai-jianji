@@ -4,11 +4,11 @@
 import React, { useRef } from 'react'
 import {
   Upload, RefreshCw, XCircle, Trash2, Download,
-  Loader2, FolderOpen
+  Loader2, FolderOpen, Search
 } from 'lucide-react'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { formatRelativeTime, formatDuration } from '@/utils/time'
-import type { JobListItem } from '@/types'
+import type { JobListItem, ClipOrderMode, JobFilterStatus } from '@/types'
 
 interface TaskPanelProps {
   jobs: JobListItem[]
@@ -17,9 +17,15 @@ interface TaskPanelProps {
   uploading?: boolean
   uploadProgress?: number
   uploadFileName?: string | null
+  clipOrderMode: ClipOrderMode
+  onClipOrderModeChange: (mode: ClipOrderMode) => void
+  searchQuery: string
+  onSearchQueryChange: (query: string) => void
+  statusFilter: JobFilterStatus
+  onStatusFilterChange: (status: JobFilterStatus) => void
   error?: string | null
   onSelectJob: (jobId: string) => void
-  onUpload: (files: File[], name?: string) => Promise<void>
+  onUpload: (files: File[], name?: string, clipOrderMode?: ClipOrderMode) => Promise<void>
   onCancel: (jobId: string) => void
   onRetry: (jobId: string) => void
   onDelete: (jobId: string) => void
@@ -30,6 +36,12 @@ export function TaskPanel({
   uploading = false,
   uploadProgress = 0,
   uploadFileName = null,
+  clipOrderMode,
+  onClipOrderModeChange,
+  searchQuery,
+  onSearchQueryChange,
+  statusFilter,
+  onStatusFilterChange,
   error = null,
   jobs, selectedJobId, loading,
   onSelectJob, onUpload, onCancel, onRetry, onDelete, onDownload,
@@ -39,7 +51,7 @@ export function TaskPanel({
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files ? Array.from(e.target.files) : []
     if (files.length > 0) {
-      void onUpload(files)
+      void onUpload(files, undefined, clipOrderMode)
       e.target.value = ''
     }
   }
@@ -49,13 +61,24 @@ export function TaskPanel({
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 bg-gray-800 border-b border-gray-700">
         <span className="text-xs font-semibold text-gray-300 uppercase tracking-wider">Tasks</span>
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="flex items-center gap-1 text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded transition-colors"
-        >
-          <Upload className="w-3 h-3" />
-          Upload
-        </button>
+        <div className="flex items-center gap-1.5">
+          <select
+            value={clipOrderMode}
+            onChange={(e) => onClipOrderModeChange(e.target.value as ClipOrderMode)}
+            className="text-[10px] px-1.5 py-1 rounded bg-gray-900 border border-gray-700 text-gray-300"
+            title="Auto clip order"
+          >
+            <option value="timeline">Timeline</option>
+            <option value="priority">Priority</option>
+          </select>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-1 text-xs bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded transition-colors"
+          >
+            <Upload className="w-3 h-3" />
+            Upload
+          </button>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -64,6 +87,32 @@ export function TaskPanel({
           className="hidden"
           onChange={handleFileChange}
         />
+      </div>
+
+      {/* Query controls */}
+      <div className="px-3 py-2 border-b border-gray-800 bg-gray-900/40 space-y-1.5">
+        <div className="relative">
+          <Search className="w-3 h-3 text-gray-500 absolute left-2 top-1/2 -translate-y-1/2" />
+          <input
+            value={searchQuery}
+            onChange={(e) => onSearchQueryChange(e.target.value)}
+            placeholder="Search name / file / id"
+            className="w-full bg-gray-900 border border-gray-700 rounded text-[10px] text-gray-300 pl-6 pr-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+          />
+        </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => onStatusFilterChange(e.target.value as JobFilterStatus)}
+          className="w-full bg-gray-900 border border-gray-700 rounded text-[10px] text-gray-300 px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+          title="Filter by status"
+        >
+          <option value="all">All Status</option>
+          <option value="queued">Queued</option>
+          <option value="processing">Processing</option>
+          <option value="completed">Completed</option>
+          <option value="failed">Failed</option>
+          <option value="canceled">Canceled</option>
+        </select>
       </div>
 
       {/* Upload progress */}
@@ -97,8 +146,12 @@ export function TaskPanel({
           </div>
         ) : jobs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-32 text-gray-600 text-sm gap-2">
-            <Upload className="w-6 h-6 opacity-50" />
-            <span>Upload a video to get started</span>
+            <Search className="w-6 h-6 opacity-50" />
+            <span>
+              {searchQuery.trim() || statusFilter !== 'all'
+                ? 'No jobs match current filters'
+                : 'Upload a video to get started'}
+            </span>
           </div>
         ) : (
           jobs.map(job => (

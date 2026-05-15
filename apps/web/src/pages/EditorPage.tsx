@@ -11,7 +11,7 @@ import { TaskPanel } from '@/components/panels/TaskPanel'
 import { EditorWorkspace } from '@/containers/EditorWorkspace'
 import { useJobDetail } from '@/hooks/useJobDetail'
 import { getDownloadUrl } from '@/services/api'
-import type { JobListItem } from '@/types'
+import type { JobListItem, ClipOrderMode, JobFilterStatus } from '@/types'
 
 interface EditorPageProps {
   jobs: JobListItem[]
@@ -20,7 +20,13 @@ interface EditorPageProps {
   uploading: boolean
   uploadProgress: number
   uploadFileName: string | null
-  onUpload: (files: File[], name?: string) => Promise<void>
+  clipOrderMode: ClipOrderMode
+  onClipOrderModeChange: (mode: ClipOrderMode) => void
+  searchQuery: string
+  onSearchQueryChange: (query: string) => void
+  statusFilter: JobFilterStatus
+  onStatusFilterChange: (status: JobFilterStatus) => void
+  onUpload: (files: File[], name?: string, clipOrderMode?: ClipOrderMode) => Promise<void>
   onCancel: (jobId: string) => void
   onRetry: (jobId: string) => void
   onDelete: (jobId: string) => void
@@ -29,14 +35,24 @@ interface EditorPageProps {
 export function EditorPage({
   jobs, loading, error,
   uploading, uploadProgress, uploadFileName,
+  clipOrderMode, onClipOrderModeChange,
+  searchQuery, onSearchQueryChange,
+  statusFilter, onStatusFilterChange,
   onUpload, onCancel, onRetry, onDelete,
 }: EditorPageProps) {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const { job, loading: jobLoading, refresh: refreshJob } = useJobDetail(selectedJobId)
+  const isFilterActive = searchQuery.trim().length > 0 || statusFilter !== 'all'
 
-  // Auto-select the first job when entering from WelcomePage (no selection yet)
+  // Keep selection in sync with the filtered job list.
   useEffect(() => {
-    if (!selectedJobId && jobs.length > 0) {
+    if (jobs.length === 0) {
+      if (selectedJobId) setSelectedJobId(null)
+      return
+    }
+
+    const existsInList = selectedJobId ? jobs.some(j => j.id === selectedJobId) : false
+    if (!selectedJobId || !existsInList) {
       setSelectedJobId(jobs[0].id)
     }
   }, [selectedJobId, jobs])
@@ -72,6 +88,12 @@ export function EditorPage({
             uploading={uploading}
             uploadProgress={uploadProgress}
             uploadFileName={uploadFileName}
+            clipOrderMode={clipOrderMode}
+            onClipOrderModeChange={onClipOrderModeChange}
+            searchQuery={searchQuery}
+            onSearchQueryChange={onSearchQueryChange}
+            statusFilter={statusFilter}
+            onStatusFilterChange={onStatusFilterChange}
             error={error}
             onSelectJob={handleSelectJob}
             onUpload={onUpload}
@@ -86,28 +108,34 @@ export function EditorPage({
       {/* Main content */}
       <main className="flex-1 flex flex-col p-3 min-w-0 overflow-hidden">
         {!selectedJobId ? (
-          <EmptyState />
+          <EmptyState filtered={isFilterActive} />
         ) : jobLoading && !job ? (
           <LoadingState />
         ) : showEditor ? (
           <EditorWorkspace job={job} onRebuildStart={handleRebuildStart} />
         ) : (
-          <EmptyState />
+          <EmptyState filtered={isFilterActive} />
         )}
       </main>
     </div>
   )
 }
 
-function EmptyState() {
+function EmptyState({ filtered = false }: { filtered?: boolean }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-gray-600 gap-4">
       <div className="w-16 h-16 rounded-2xl bg-gray-800 flex items-center justify-center">
         <Activity className="w-8 h-8 text-gray-600" />
       </div>
       <div className="text-center">
-        <h2 className="text-lg font-semibold text-gray-400 mb-1">Football Clip AI Workbench</h2>
-        <p className="text-sm">Upload a match video or select a job from the left panel</p>
+        <h2 className="text-lg font-semibold text-gray-400 mb-1">
+          {filtered ? 'No Matching Jobs' : 'Football Clip AI Workbench'}
+        </h2>
+        <p className="text-sm">
+          {filtered
+            ? 'Try clearing keyword or status filters in the left panel'
+            : 'Upload a match video or select a job from the left panel'}
+        </p>
       </div>
     </div>
   )
@@ -120,4 +148,3 @@ function LoadingState() {
     </div>
   )
 }
-

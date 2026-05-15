@@ -7,13 +7,16 @@ import {
   Upload, Film, Zap, Scissors, Clock,
   Loader2, AlertCircle,
 } from 'lucide-react'
+import type { ClipOrderMode } from '@/types'
 
 interface WelcomePageProps {
   uploading: boolean
   uploadProgress: number
   uploadFileName: string | null
+  clipOrderMode: ClipOrderMode
+  onClipOrderModeChange: (mode: ClipOrderMode) => void
   error: string | null
-  onUpload: (files: File[], name?: string) => Promise<void>
+  onUpload: (files: File[], name?: string, clipOrderMode?: ClipOrderMode) => Promise<void>
 }
 
 const ACCEPT_EXTENSIONS = ['mp4', 'mov', 'avi', 'mkv', 'webm']
@@ -22,6 +25,8 @@ export function WelcomePage({
   uploading,
   uploadProgress,
   uploadFileName,
+  clipOrderMode,
+  onClipOrderModeChange,
   error,
   onUpload,
 }: WelcomePageProps) {
@@ -50,14 +55,14 @@ export function WelcomePage({
       return ACCEPT_EXTENSIONS.includes(ext)
     })
     if (files.length > 0) {
-      void onUpload(files)
+      void onUpload(files, undefined, clipOrderMode)
     }
-  }, [onUpload])
+  }, [clipOrderMode, onUpload])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files ? Array.from(e.target.files) : []
     if (files.length > 0) {
-      void onUpload(files)
+      void onUpload(files, undefined, clipOrderMode)
       e.target.value = ''
     }
   }
@@ -117,6 +122,24 @@ export function WelcomePage({
               <p className="text-xs text-gray-600">
                 Supports {ACCEPT_EXTENSIONS.map(e => `.${e}`).join(', ')}
               </p>
+
+              <div
+                className="mt-4 w-full max-w-xs"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <label htmlFor="clip-order-mode" className="block text-[11px] text-gray-500 mb-1 text-left">
+                  Auto Clip Order
+                </label>
+                <select
+                  id="clip-order-mode"
+                  value={clipOrderMode}
+                  onChange={(e) => onClipOrderModeChange(e.target.value as ClipOrderMode)}
+                  className="w-full px-3 py-2 rounded-lg bg-gray-900 border border-gray-700 text-sm text-gray-200 focus:outline-none focus:ring-2 focus:ring-green-500/60"
+                >
+                  <option value="timeline">Timeline Order (chronological)</option>
+                  <option value="priority">Priority Order (highlights first)</option>
+                </select>
+              </div>
 
               <button
                 className="mt-6 px-5 py-2 bg-green-600 hover:bg-green-500 text-white text-sm font-medium rounded-lg transition-colors"

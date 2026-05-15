@@ -11,13 +11,16 @@ import { useJobs } from '@/hooks/useJobs'
 
 export default function App() {
   const {
-    jobs, loading, error,
+    jobs, hasJobs, loading, error,
     uploading, uploadProgress, uploadFileName,
-    onUpload, onCancel, onRetry, onDelete, refresh,
+    clipOrderMode, setClipOrderMode,
+    searchQuery, setSearchQuery,
+    statusFilter, setStatusFilter,
+    onUpload, onCancel, onRetry, onDelete,
   } = useJobs()
 
   // Show loading spinner during initial fetch
-  if (loading && jobs.length === 0) {
+  if (loading && !hasJobs && jobs.length === 0) {
     return (
       <div className="flex h-screen bg-gray-950 items-center justify-center">
         <div className="w-6 h-6 border-2 border-gray-700 border-t-green-500 rounded-full animate-spin" />
@@ -26,12 +29,14 @@ export default function App() {
   }
 
   // No history → welcome / import page (stays here during upload until jobs appear)
-  if (jobs.length === 0) {
+  if (!hasJobs) {
     return (
       <WelcomePage
         uploading={uploading}
         uploadProgress={uploadProgress}
         uploadFileName={uploadFileName}
+        clipOrderMode={clipOrderMode}
+        onClipOrderModeChange={setClipOrderMode}
         error={error}
         onUpload={onUpload}
       />
@@ -47,6 +52,12 @@ export default function App() {
       uploading={uploading}
       uploadProgress={uploadProgress}
       uploadFileName={uploadFileName}
+      clipOrderMode={clipOrderMode}
+      onClipOrderModeChange={setClipOrderMode}
+      searchQuery={searchQuery}
+      onSearchQueryChange={setSearchQuery}
+      statusFilter={statusFilter}
+      onStatusFilterChange={setStatusFilter}
       onUpload={onUpload}
       onCancel={onCancel}
       onRetry={onRetry}

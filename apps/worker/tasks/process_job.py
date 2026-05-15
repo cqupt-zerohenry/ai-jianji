@@ -93,6 +93,13 @@ async def _async_run_job(job_id: str, source_path: str, rebuild: bool) -> dict:
 
     source_manifest = load_manifest(job_id) or {}
     source_segments = source_manifest.get("sources", []) if isinstance(source_manifest, dict) else []
+    clip_order_mode = (
+        str(source_manifest.get("clip_order_mode")).strip().lower()
+        if isinstance(source_manifest, dict) and source_manifest.get("clip_order_mode")
+        else get_settings().resolved_clip_plan_order_mode
+    )
+    if clip_order_mode not in {"timeline", "priority"}:
+        clip_order_mode = get_settings().resolved_clip_plan_order_mode
 
     # Multi-source jobs are processed directly from independent source files.
     if source_segments:
@@ -107,6 +114,7 @@ async def _async_run_job(job_id: str, source_path: str, rebuild: bool) -> dict:
             "sources": normalized_segments,
             "source_count": len(normalized_segments),
             "status": "ready",
+            "clip_order_mode": clip_order_mode,
         })
     elif not os.path.exists(source_path):
         raise FileNotFoundError(f"Source video not found: {source_path}")
@@ -233,7 +241,7 @@ async def _async_run_job(job_id: str, source_path: str, rebuild: bool) -> dict:
 
             detection_result = DetectionResult(
                 events=merged_events,
-                chain_used="+".join(chains) if chains else "mock",
+                chain_used="+".join(chains) if chains else "inference",
                 video_duration=duration,
             )
         else:
@@ -275,7 +283,10 @@ async def _async_run_job(job_id: str, source_path: str, rebuild: bool) -> dict:
             await bulk_insert_events(db, job_id, events_data)
 
             # ── Step 4: Build clip plan ─────────────────────────────
-            clip_plan = build_clip_plan(detection_result)
+            clip_plan = build_clip_plan(
+                detection_result,
+                order_mode=clip_order_mode,
+            )
 
             # ── Step 5: Create timeline + clips in SQLite ───────────
             await delete_timelines_for_job(db, job_id)

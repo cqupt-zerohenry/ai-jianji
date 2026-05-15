@@ -74,6 +74,9 @@ def ensure_multi_source(job_id: str, original_source_path: str, original_filenam
         "status": "uploaded",
         "source_count": 1,
     }
+    if existing and isinstance(existing, dict):
+        if existing.get("clip_order_mode"):
+            manifest["clip_order_mode"] = existing["clip_order_mode"]
     write_manifest(job_id, manifest)
     return manifest
 

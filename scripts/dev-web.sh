@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HOST="${WEB_HOST:-0.0.0.0}"
 PORT="${WEB_PORT:-5173}"
 PID_FILE="$ROOT/.pids/web.pid"
 
@@ -42,4 +43,5 @@ cleanup_web_processes() {
 }
 
 cleanup_web_processes
-exec pnpm --filter web dev
+cd "$ROOT/apps/web"
+exec pnpm exec vite --host "$HOST" --port "$PORT"

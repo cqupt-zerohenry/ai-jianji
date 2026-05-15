@@ -17,7 +17,10 @@ class Settings(BaseSettings):
     # API Keys
     dashscope_api_key: str = ""
     dashscope_base_http_api_url: str = "https://dashscope.aliyuncs.com/api/v1"
+    dashscope_compatible_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     dashscope_model: str = "qwen3-vl-flash"
+    dashscope_audio_asr_model: str = "qwen3-asr-flash"
+    dashscope_audio_text_model: str = "qwen-plus"
     dashscope_window_seconds: int = 180
     dashscope_frames_per_window: int = 8
     dashscope_max_windows: int = 20
@@ -51,10 +54,19 @@ class Settings(BaseSettings):
     event_dedup_window_seconds: float = 10.0
     clip_pre_buffer_seconds: float = 5.0
     clip_post_buffer_seconds: float = 3.0
+    clip_plan_order_mode: str = "timeline"  # timeline | priority
+    detection_cache_enabled: bool = True
+    detection_cache_dir: str = "./data/cache/detections"
+    detection_cache_ttl_seconds: int = 604800  # 7 days
 
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",")]
+
+    @property
+    def resolved_clip_plan_order_mode(self) -> str:
+        mode = (self.clip_plan_order_mode or "timeline").strip().lower()
+        return "priority" if mode == "priority" else "timeline"
 
 
 @lru_cache()

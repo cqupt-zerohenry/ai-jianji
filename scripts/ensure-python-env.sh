@@ -130,14 +130,14 @@ main() {
 
   if [ ! -x "$venv_python" ]; then
     echo "[python-env] Creating virtual environment at $VENV_DIR" >&2
-    "$base_python" -m venv "$VENV_DIR"
+    "$base_python" -m venv "$VENV_DIR" >&2
   fi
 
   "$venv_python" -m ensurepip --upgrade >/dev/null 2>&1 || true
 
   if requirements_need_install || ! python_has_modules "$venv_python" "${required_modules[@]}"; then
     echo "[python-env] Installing Python dependencies from requirements.txt" >&2
-    "$venv_python" -m pip install -r "$REQUIREMENTS_FILE"
+    "$venv_python" -m pip install -r "$REQUIREMENTS_FILE" >&2
     touch "$STAMP_FILE"
   fi
 

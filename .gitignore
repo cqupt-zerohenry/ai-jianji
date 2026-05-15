@@ -9,6 +9,9 @@ logs/
 __pycache__/
 *.py[cod]
 *.zip                                                                         
+*.tar
+*.doc
+*.docx
 .DS_Store
 sqlite:
 .env

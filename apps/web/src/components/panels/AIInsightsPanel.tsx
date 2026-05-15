@@ -16,6 +16,7 @@ export function AIInsightsPanel({ job }: AIInsightsPanelProps) {
   const sortedPlanClips = React.useMemo(() => {
     if (!job.ai_plan?.clips) return []
     return [...job.ai_plan.clips].sort((a, b) => {
+      if (a.order_index !== b.order_index) return a.order_index - b.order_index
       if (a.start_time !== b.start_time) return a.start_time - b.start_time
       return a.order_index - b.order_index
     })
@@ -30,6 +31,11 @@ export function AIInsightsPanel({ job }: AIInsightsPanelProps) {
         {job.detection_chain && (
           <span className="ml-auto px-1.5 py-0.5 rounded text-[10px] bg-purple-900/50 text-purple-300">
             {job.detection_chain}
+          </span>
+        )}
+        {job.ai_plan?.order_mode && (
+          <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
+            order: {job.ai_plan.order_mode}
           </span>
         )}
       </div>

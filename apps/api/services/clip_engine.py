@@ -42,8 +42,22 @@ SHOT_LIKE_EVENTS = {
     EventType.SAVE,
 }
 
+ATTACK_SEQUENCE_EVENT_TYPES = {
+    EventType.GOAL,
+    EventType.SHOT_ON_TARGET,
+    EventType.SHOT_BLOCKED,
+    EventType.SAVE,
+    EventType.CORNER_KICK,
+    EventType.FREE_KICK,
+    EventType.PENALTY,
+    EventType.VAR,
+    EventType.HIGHLIGHT,
+}
+
 MAX_CLIPS_DEFAULT = 28
 SHOT_RATIO_MAX_DEFAULT = 0.6
+SEQUENCE_MERGE_GAP_SECONDS = 2.0
+SEQUENCE_MERGE_EVENT_DELTA_SECONDS = 18.0
 PER_TYPE_CAP: dict[EventType, int] = {
     EventType.GOAL: 8,
     EventType.PENALTY: 4,
@@ -156,31 +170,36 @@ def build_clip_plan(
     detection_result: DetectionResult,
     pre_buffer: Optional[float] = None,
     post_buffer: Optional[float] = None,
+    order_mode: Optional[str] = None,
 ) -> dict:
     """Convert detection events → ordered clip segments with metadata."""
     pre = pre_buffer or settings.clip_pre_buffer_seconds
     post = post_buffer or settings.clip_post_buffer_seconds
     duration = detection_result.video_duration or float("inf")
+    resolved_order_mode = _resolve_clip_order_mode(order_mode)
 
     deduped = deduplicate_events(detection_result.events)
 
     # Sort primarily by timeline order (time), with priority as tie-breaker.
-    sorted_events = sorted(
+    timeline_sorted_events = sorted(
         deduped,
         key=lambda e: (e.timestamp_seconds, -EVENT_PRIORITY.get(e.event_type, 0)),
     )
-    selected_events = _select_diverse_events(
-        sorted_events,
+    selected_events_timeline = _select_diverse_events(
+        timeline_sorted_events,
         max_clips=MAX_CLIPS_DEFAULT,
         max_shot_ratio=SHOT_RATIO_MAX_DEFAULT,
     )
+    output_events = _sort_output_events(selected_events_timeline, resolved_order_mode)
+    timeline_index_by_id = {id(event): idx for idx, event in enumerate(selected_events_timeline)}
 
-    clips = []
-    for idx, event in enumerate(selected_events):
+    raw_clips = []
+    for idx, event in enumerate(output_events):
+        timeline_idx = timeline_index_by_id.get(id(event), idx)
         start, end = _compute_event_clip_window(
             event=event,
-            ordered_events=selected_events,
-            event_index=idx,
+            ordered_events=selected_events_timeline,
+            event_index=timeline_idx,
             default_pre=pre,
             default_post=post,
             duration=duration,
@@ -200,6 +219,12 @@ def build_clip_plan(
             "description": event.description,
             "transition_type": _suggest_transition(event.event_type.value),
             "transition_duration": 0.5,
+            "_event_type_enum": event.event_type,
+            "_event_timestamp": float(event.timestamp_seconds),
+            "_source_key": _event_source_key(event),
+            "_event_priority": EVENT_PRIORITY.get(event.event_type, 0),
+            "_merged_event_count": 1,
+            "_merged_event_types": [event.event_type],
         }
 
         # Preserve source linkage for multi-source jobs.
@@ -210,15 +235,21 @@ def build_clip_plan(
         if metadata.get("source_path"):
             clip["source_path"] = metadata.get("source_path")
 
-        clips.append(clip)
+        raw_clips.append(clip)
+
+    if resolved_order_mode == "timeline":
+        clips = _merge_sequence_clips(raw_clips)
+    else:
+        clips = _finalize_clips(raw_clips)
 
     return {
         "chain_used": detection_result.chain_used,
+        "order_mode": resolved_order_mode,
         "total_events": len(deduped),
         "clips": clips,
         "ai_summary": (
-            f"Detected {len(deduped)} events, selected {len(selected_events)} diverse moments, "
-            f"generated {len(clips)} clips"
+            f"Detected {len(deduped)} events, selected {len(selected_events_timeline)} diverse moments, "
+            f"generated {len(clips)} clips (order: {resolved_order_mode})"
         ),
     }
 
@@ -302,6 +333,128 @@ def _select_diverse_events(
             per_type_counts[event_type] = per_type_counts.get(event_type, 0) + 1
 
     return sorted(capped_events, key=lambda e: (e.timestamp_seconds, -EVENT_PRIORITY.get(e.event_type, 0)))
+
+
+def _resolve_clip_order_mode(order_mode: Optional[str]) -> str:
+    if order_mode:
+        mode = order_mode.strip().lower()
+        return "priority" if mode == "priority" else "timeline"
+    return settings.resolved_clip_plan_order_mode
+
+
+def _sort_output_events(events: list[DetectionEvent], order_mode: str) -> list[DetectionEvent]:
+    if order_mode == "priority":
+        return sorted(
+            events,
+            key=lambda e: (
+                -EVENT_PRIORITY.get(e.event_type, 0),
+                -float(e.confidence),
+                float(e.timestamp_seconds),
+            ),
+        )
+    return list(events)
+
+
+def _merge_sequence_clips(raw_clips: list[dict]) -> list[dict]:
+    """Merge overlapping attack-sequence clips so the final reel feels less fragmented."""
+    if not raw_clips:
+        return []
+
+    merged: list[dict] = []
+    for clip in raw_clips:
+        if merged and _should_merge_sequence(merged[-1], clip):
+            merged[-1] = _merge_clip_pair(merged[-1], clip)
+        else:
+            merged.append(dict(clip))
+
+    return _finalize_clips(merged)
+
+
+def _finalize_clips(clips: list[dict]) -> list[dict]:
+    cleaned: list[dict] = []
+    for idx, clip in enumerate(clips):
+        clip["order_index"] = idx
+        cleaned.append({k: v for k, v in clip.items() if not k.startswith("_")})
+    return cleaned
+
+
+def _should_merge_sequence(prev_clip: dict, current_clip: dict) -> bool:
+    prev_event_type = prev_clip.get("_event_type_enum")
+    current_event_type = current_clip.get("_event_type_enum")
+    if prev_event_type not in ATTACK_SEQUENCE_EVENT_TYPES or current_event_type not in ATTACK_SEQUENCE_EVENT_TYPES:
+        return False
+
+    if prev_clip.get("_source_key") != current_clip.get("_source_key"):
+        return False
+
+    prev_end = float(prev_clip.get("end_time") or 0.0)
+    current_start = float(current_clip.get("start_time") or 0.0)
+    if current_start > prev_end + SEQUENCE_MERGE_GAP_SECONDS:
+        return False
+
+    prev_event_ts = float(prev_clip.get("_event_timestamp") or 0.0)
+    current_event_ts = float(current_clip.get("_event_timestamp") or 0.0)
+    if current_event_ts - prev_event_ts > SEQUENCE_MERGE_EVENT_DELTA_SECONDS:
+        return False
+
+    return True
+
+
+def _merge_clip_pair(prev_clip: dict, current_clip: dict) -> dict:
+    merged = dict(prev_clip)
+    merged["start_time"] = round(min(float(prev_clip["start_time"]), float(current_clip["start_time"])), 2)
+    merged["end_time"] = round(max(float(prev_clip["end_time"]), float(current_clip["end_time"])), 2)
+    merged["confidence"] = max(float(prev_clip.get("confidence") or 0.0), float(current_clip.get("confidence") or 0.0))
+
+    prev_types = list(prev_clip.get("_merged_event_types") or [prev_clip.get("_event_type_enum")])
+    for event_type in current_clip.get("_merged_event_types") or [current_clip.get("_event_type_enum")]:
+        if event_type not in prev_types:
+            prev_types.append(event_type)
+    merged["_merged_event_types"] = prev_types
+    merged["_merged_event_count"] = int(prev_clip.get("_merged_event_count") or 1) + int(current_clip.get("_merged_event_count") or 1)
+
+    prev_priority = int(prev_clip.get("_event_priority") or 0)
+    current_priority = int(current_clip.get("_event_priority") or 0)
+    promote_current = current_priority > prev_priority
+    if current_priority == prev_priority:
+        promote_current = float(current_clip.get("confidence") or 0.0) > float(prev_clip.get("confidence") or 0.0)
+
+    primary_clip = current_clip if promote_current else prev_clip
+    primary_event_type = primary_clip.get("_event_type_enum")
+    primary_event_ts = float(primary_clip.get("_event_timestamp") or 0.0)
+
+    merged["_event_type_enum"] = primary_event_type
+    merged["_event_timestamp"] = primary_event_ts
+    merged["_event_priority"] = int(primary_clip.get("_event_priority") or 0)
+    merged["event_type"] = primary_event_type.value
+    merged["transition_type"] = _suggest_transition(primary_event_type.value)
+    merged["title"] = _build_merged_clip_title(primary_event_type, primary_event_ts, len(prev_types))
+    merged["description"] = _merge_clip_descriptions(prev_clip.get("description"), current_clip.get("description"))
+
+    for field in ("source_index", "source_name", "source_path"):
+        if field not in merged or merged.get(field) in (None, ""):
+            if current_clip.get(field) not in (None, ""):
+                merged[field] = current_clip.get(field)
+
+    return merged
+
+
+def _build_merged_clip_title(primary_event_type: EventType, timestamp_seconds: float, merged_type_count: int) -> str:
+    label = EVENT_DISPLAY_NAME_ZH.get(primary_event_type, primary_event_type.value)
+    if merged_type_count > 1:
+        return f"{label}串联 · {_fmt_time(timestamp_seconds)}"
+    return f"{label} · {_fmt_time(timestamp_seconds)}"
+
+
+def _merge_clip_descriptions(prev_description: Optional[str], current_description: Optional[str]) -> Optional[str]:
+    parts: list[str] = []
+    for value in (prev_description, current_description):
+        text = str(value or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+    if not parts:
+        return None
+    return " / ".join(parts)[:180]
 
 
 def _suggest_transition(event_type: str) -> str:

@@ -20,6 +20,8 @@ export type EventType =
   | 'HIGHLIGHT'
 
 export type TransitionType = 'cut' | 'fade' | 'wipe' | 'slide' | 'circle'
+export type ClipOrderMode = 'timeline' | 'priority'
+export type JobFilterStatus = JobStatus | 'all'
 
 export interface DetectedEvent {
   id: string
@@ -86,6 +88,7 @@ export interface JobDetail extends JobListItem {
 
 export interface AIPlan {
   chain_used: string
+  order_mode?: ClipOrderMode
   total_events: number
   clips: AIPlanClip[]
   ai_summary: string
@@ -131,5 +134,6 @@ export interface HealthCheck {
   api: boolean
   redis: boolean
   sqlite: boolean
+  clip_plan_order_mode: ClipOrderMode
   timestamp: string
 }

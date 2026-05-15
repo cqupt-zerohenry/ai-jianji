@@ -62,14 +62,14 @@ class TestDeduplication:
 
 class TestBuildClipPlan:
     def test_empty_events(self):
-        result = DetectionResult(events=[], chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=[], chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result)
         assert plan["clips"] == []
         assert plan["total_events"] == 0
 
     def test_clips_clamped_to_duration(self):
         events = [make_event(EventType.GOAL, 10.0)]  # near start
-        result = DetectionResult(events=events, chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result, pre_buffer=20.0, post_buffer=10.0)
         clip = plan["clips"][0]
         assert clip["start_time"] >= 0.0
@@ -77,7 +77,7 @@ class TestBuildClipPlan:
 
     def test_default_window_is_extended_for_shot_context(self):
         events = [make_event(EventType.SHOT_ON_TARGET, 100.0)]
-        result = DetectionResult(events=events, chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result)
         clip = plan["clips"][0]
         assert clip["start_time"] <= 94.0
@@ -88,7 +88,7 @@ class TestBuildClipPlan:
             make_event(EventType.GOAL, 1000.0),
             make_event(EventType.RED_CARD, 2000.0),
         ]
-        result = DetectionResult(events=events, chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result)
         goal_clip = next(c for c in plan["clips"] if c["event_type"] == "GOAL")
         card_clip = next(c for c in plan["clips"] if c["event_type"] == "RED_CARD")
@@ -100,7 +100,7 @@ class TestBuildClipPlan:
             make_event(EventType.HIGHLIGHT, 100.0),
             make_event(EventType.GOAL, 200.0),
         ]
-        result = DetectionResult(events=events, chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result)
         assert plan["clips"][0]["event_type"] == "HIGHLIGHT"
         assert plan["clips"][1]["event_type"] == "GOAL"
@@ -122,11 +122,72 @@ class TestBuildClipPlan:
                 metadata={"source_index": 1, "source_name": "Cam B", "source_path": "/tmp/b.mp4"},
             ),
         ]
-        result = DetectionResult(events=events, chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result, pre_buffer=2.0, post_buffer=2.0)
 
         assert len(plan["clips"]) == 2
         assert {c.get("source_index") for c in plan["clips"]} == {0, 1}
+
+    def test_attack_sequence_events_are_merged_into_one_clip(self):
+        events = [
+            DetectionEvent(
+                event_type=EventType.CORNER_KICK,
+                timestamp_seconds=100.0,
+                confidence=0.82,
+                description="Corner delivered into the box",
+                metadata={"source_index": 0},
+            ),
+            DetectionEvent(
+                event_type=EventType.SHOT_ON_TARGET,
+                timestamp_seconds=105.0,
+                confidence=0.88,
+                description="Header on target",
+                metadata={"source_index": 0},
+            ),
+            DetectionEvent(
+                event_type=EventType.GOAL,
+                timestamp_seconds=108.0,
+                confidence=0.95,
+                description="Rebound goal scored",
+                metadata={"source_index": 0},
+            ),
+        ]
+
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
+        plan = build_clip_plan(result)
+
+        assert len(plan["clips"]) == 1
+        clip = plan["clips"][0]
+        assert clip["event_type"] == "GOAL"
+        assert clip["start_time"] <= 93.0
+        assert clip["end_time"] >= 117.0
+        assert "串联" in clip["title"]
+        assert "Corner delivered into the box" in (clip.get("description") or "")
+        assert "Rebound goal scored" in (clip.get("description") or "")
+
+    def test_attack_sequence_events_from_different_sources_are_not_merged(self):
+        events = [
+            DetectionEvent(
+                event_type=EventType.SHOT_ON_TARGET,
+                timestamp_seconds=105.0,
+                confidence=0.88,
+                description="Cam A shot",
+                metadata={"source_index": 0},
+            ),
+            DetectionEvent(
+                event_type=EventType.GOAL,
+                timestamp_seconds=108.0,
+                confidence=0.95,
+                description="Cam B goal",
+                metadata={"source_index": 1},
+            ),
+        ]
+
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
+        plan = build_clip_plan(result)
+
+        assert len(plan["clips"]) == 2
+        assert {clip.get("source_index") for clip in plan["clips"]} == {0, 1}
 
     def test_diversity_keeps_non_shot_events(self):
         events = []
@@ -139,7 +200,7 @@ class TestBuildClipPlan:
             make_event(EventType.OFFSIDE, 250.0, conf=0.87),
         ])
 
-        result = DetectionResult(events=events, chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result)
         event_types = [c["event_type"] for c in plan["clips"]]
 
@@ -154,7 +215,7 @@ class TestBuildClipPlan:
             make_event(EventType.CORNER_KICK, 100.0),
             make_event(EventType.SUBSTITUTION, 200.0),
         ]
-        result = DetectionResult(events=events, chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result)
         corner = next(c for c in plan["clips"] if c["event_type"] == "CORNER_KICK")
         sub = next(c for c in plan["clips"] if c["event_type"] == "SUBSTITUTION")
@@ -166,7 +227,7 @@ class TestBuildClipPlan:
             make_event(EventType.FOUL, 200.0, conf=0.85),
             make_event(EventType.YELLOW_CARD, 212.0, conf=0.9),
         ]
-        result = DetectionResult(events=events, chain_used="mock", video_duration=5400.0)
+        result = DetectionResult(events=events, chain_used="dashscope", video_duration=5400.0)
         plan = build_clip_plan(result)
         foul_clip = next(c for c in plan["clips"] if c["event_type"] == "FOUL")
         # Should include yellow-card decision aftermath, not end immediately at foul.

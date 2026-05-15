@@ -5,7 +5,7 @@
 import axios from 'axios'
 import type {
   JobListItem, JobDetail, JobCreateResponse,
-  RebuildRequest, HealthCheck, SourceInfo
+  RebuildRequest, HealthCheck, SourceInfo, ClipOrderMode, JobFilterStatus
 } from '@/types'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
@@ -20,11 +20,13 @@ const api = axios.create({
 export async function uploadJob(
   file: File,
   name?: string,
+  clipOrderMode: ClipOrderMode = 'timeline',
   onProgress?: (progress: number) => void,
 ): Promise<JobCreateResponse> {
   const form = new FormData()
   form.append('file', file)
   if (name) form.append('name', name)
+  form.append('clip_order_mode', clipOrderMode)
   const { data } = await api.post<JobCreateResponse>('/api/jobs', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 120000, // longer timeout for upload
@@ -41,6 +43,7 @@ export async function uploadJob(
 export async function uploadJobs(
   files: File[],
   name?: string,
+  clipOrderMode: ClipOrderMode = 'timeline',
   onProgress?: (progress: number) => void,
 ): Promise<JobCreateResponse> {
   const form = new FormData()
@@ -48,6 +51,7 @@ export async function uploadJobs(
     form.append('files', file)
   }
   if (name) form.append('name', name)
+  form.append('clip_order_mode', clipOrderMode)
 
   const totalSize = files.reduce((sum, f) => sum + (f.size || 0), 0)
   const { data } = await api.post<JobCreateResponse>('/api/jobs/multi', form, {
@@ -63,8 +67,15 @@ export async function uploadJobs(
   return data
 }
 
-export async function listJobs(): Promise<JobListItem[]> {
-  const { data } = await api.get<JobListItem[]>('/api/jobs')
+export async function listJobs(filters?: {
+  q?: string
+  status?: JobFilterStatus
+}): Promise<JobListItem[]> {
+  const params: Record<string, string> = {}
+  if (filters?.q && filters.q.trim()) params.q = filters.q.trim()
+  if (filters?.status && filters.status !== 'all') params.status = filters.status
+
+  const { data } = await api.get<JobListItem[]>('/api/jobs', { params })
   return data
 }
 

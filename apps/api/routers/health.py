@@ -7,6 +7,7 @@ from sqlalchemy import text
 from apps.api.models.database import get_db
 from apps.api.queue.redis_client import ping_redis
 from apps.api.schemas.job_schemas import HealthCheck
+from apps.api.config import get_settings
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -32,5 +33,6 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         api=True,
         redis=redis_ok,
         sqlite=sqlite_ok,
+        clip_plan_order_mode=get_settings().resolved_clip_plan_order_mode,
         timestamp=datetime.utcnow(),
     )
